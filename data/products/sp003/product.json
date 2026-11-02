@@ -1,0 +1,21 @@
+{
+  "name": "Sữa Ông Thọ 380g",
+  "brand": "Ông Thọ",
+  "category": "Sữa đặc",
+  "form": "Lon",
+  "package": "Lon 380g",
+  "price": 28000,
+  "volume": "380g",
+  "description": "Sữa đặc có đường Ông Thọ, lon 380g.",
+  "ingredients": [],
+  "benefits": [],
+  "warnings": [],
+  "keywords": ["ông thọ", "sữa đặc", "ong tho"],
+  "tags": ["sữa", "sữa đặc"],
+  "stock": 150,
+  "id": "sp003",
+  "media": {
+    "images": ["images/sp003.png"],
+    "videos": []
+  }
+}

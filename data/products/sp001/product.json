@@ -1,0 +1,21 @@
+{
+  "name": "Sữa Milo 180ml",
+  "brand": "Milo",
+  "category": "Sữa nước",
+  "form": "Lon",
+  "package": "Lon 180ml",
+  "price": 15000,
+  "volume": "180ml",
+  "description": "Sữa lúa mạch Milo 180ml, uống liền, giàu năng lượng.",
+  "ingredients": [],
+  "benefits": [],
+  "warnings": [],
+  "keywords": ["milo", "sữa milo", "milo 180ml"],
+  "tags": ["sữa", "đồ uống"],
+  "stock": 200,
+  "id": "sp001",
+  "media": {
+    "images": ["images/sp001.png"],
+    "videos": ["videos/sp001.mp4"]
+  }
+}

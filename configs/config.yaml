@@ -1,0 +1,535 @@
+# configs/config.yaml
+
+# This process's account identity. Named explicitly, never guessed: every
+# conversation, message, customer and task is stored under this id, and a
+# wrong id here means answering a customer with another shop's history.
+# The dashboard overwrites these values in each generated account config.
+account:
+  id: default
+  platform: tiktok_web
+  username: ""
+  label: "Default account"
+
+app:
+  name: autonomous-agent
+  environment: development
+  debug: true
+
+runtime:
+  loop_interval_seconds: 1.0
+  max_retries: 3
+  task_timeout_seconds: 120
+  graceful_shutdown_timeout_seconds: 10
+
+langgraph:
+  # Checkpoints live in the shared PostgreSQL database (storage.database_url).
+  # Threads are namespaced `account_id:task_id`, so two accounts never address
+  # the same checkpoint thread.
+  recursion_limit: 1000
+
+browser:
+  mode: cdp
+  cdp_url: "http://127.0.0.1:29222"
+  timeout_ms: 15000
+  screenshot_delay_seconds: 7
+  max_screenshots_per_run: 9
+  # BrowserObserver waits briefly for a MutationObserver event after actions,
+  # then falls back to the normal DOM snapshot without failing the task.
+  extension_event_wait_ms: 1200
+
+gui_training:
+  enabled: true
+  directory: data/gui_training
+
+# DOM-first flow: DomObserver -> StateParser -> TargetResolver ->
+# ActionExecutor -> StateVerifier. State is always confirmed by re-reading the
+# DOM within the budget below; a fixed sleep is never the confirmation.
+perception:
+  dom_state_timeout_ms: 4000
+  dom_poll_interval_ms: 150
+  state_verify_timeout_ms: 4000
+
+vision:
+  enabled: true
+  fallback_only: true
+  # Vision is Gemini-only. DOM/Extension remains the primary perception source.
+  gemini:
+    enabled: true
+  provider: gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  # API key is read from GEMINI_API_KEY only (see .env); never put it here.
+  model: gemini-3.1-flash-lite
+  timeout_seconds: 120
+  screen_confidence_threshold: 0.80
+  target_confidence_threshold: 0.85
+  max_targets: 20
+  max_capture_attempts: 3
+  retry_delay_seconds: 2
+
+platform:
+  default: tiktok_web
+
+  tiktok_web:
+    base_url: https://www.tiktok.com
+
+planner:
+  enabled: true
+
+  strategy:
+    deterministic_first: true
+    llm_fallback: true
+
+  max_actions_per_plan: 20
+  max_replans_per_task: 5
+
+# Danh sách skill được đăng ký thẳng trong main.py; giới hạn thời gian chạy và
+# số action của một task nằm ở `policy.limits`, không phải ở đây.
+
+tools:
+  # Chỉ những action trong danh sách này mới được policy cho phép chạy.
+  allowed:
+    - browser.open_tiktok
+    - browser.check_auth
+    - browser.back
+    - browser.input_text
+    - browser.screenshot
+    - browser.snapshot
+    - browser.click_bbox
+    - platform.open_home
+    - platform.detect_unread
+    - platform.open_inbox
+    - platform.open_profile
+    - platform.open_search
+    - platform.open_upload
+    - platform.open_comments
+    - platform.open_notifications
+    - platform.open_conversation
+    - platform.open_unread_conversation
+    - platform.list_conversations
+    - platform.list_unread_conversations
+    - platform.list_all_conversations
+    - platform.reload_page
+    - platform.detect_message_requests
+    - platform.open_message_requests
+    - platform.list_message_requests
+    - platform.open_message_request
+    - platform.accept_message_request
+    - platform.return_to_primary_inbox
+    - platform.focus_message_input
+    - platform.attach_message_media
+    - platform.clear_message_draft
+    - platform.send_message
+    - platform.retry_send
+    - platform.swipe_next
+
+policy:
+  enabled: true
+
+  limits:
+    max_actions_per_task: 200
+    max_retries_per_action: 3
+    max_task_runtime_seconds: 600
+
+  interaction_limits:
+    platform.attach_message_media:
+      max: 15
+      window_seconds: 3600
+    # Tin agent tự gửi mỗi giờ cho mỗi workspace (tin nhân viên gửi tay không
+    # tính vào đây). Chạm mức này thì agent ngừng trả lời tới khi cửa sổ trôi qua.
+    platform.send_message:
+      max: 60
+      window_seconds: 3600
+    platform.reply_comment:
+      max: 15
+      window_seconds: 3600
+    platform.publish_video:
+      max: 5
+      window_seconds: 3600
+
+  blocked_tools:
+    - system.shell
+    - system.exec
+    - browser.execute_script
+
+auth:
+  require_logged_in: true
+  manual_login_poll_seconds: 5
+  rate_limited_poll_seconds: 60
+  # The agent can open TikTok's login modal, click "Continue with Google", then
+  # select account index 0 in Chrome's FedCM chooser. It never enters a password
+  # or handles CAPTCHA/OTP. This cap and cooldown prevent repeated OAuth opens.
+  auto_login:
+    enabled: true
+    max_attempts_per_process: 2
+    cooldown_seconds: 300
+    post_submit_wait_seconds: 3
+    fedcm_settle_seconds: 2
+  temporary_backoff_seconds:
+    - 2
+    - 5
+    - 15
+
+recovery:
+  enabled: true
+
+  message_processing_max_attempts: 2
+  message_retry_backoff_seconds: 1
+  outbound_submit_max_attempts: 2
+  outbound_retry_backoff_seconds: 1
+
+  sequence:
+    - reobserve
+    - back
+    - vision
+    - replan
+    - abort
+
+scheduler:
+  enabled: true
+  poll_interval_seconds: 2
+
+  idle:
+    sleep_seconds: 3
+
+conversation_control:
+  # Safety-net auto-release, not an activity timeout: nothing updates a
+  # takeover/escalation row while a human is quietly answering through
+  # TikTok directly, so these TTLs exist only so a forgotten "Release"
+  # click or an unresolved escalation cannot lock a customer out of the
+  # agent forever. HUMAN (someone explicitly clicked takeover) gets the
+  # longer window since they may still be mid-reply; WAITING_HUMAN
+  # (an escalation nobody has looked at yet) gets a shorter one because
+  # reverting it to AUTO does not force a reply - the next scan re-runs
+  # the same safety analysis and re-escalates on its own if the content
+  # is still genuinely unsafe. Set to 0 to disable auto-release for that
+  # mode and require an explicit human release, as before.
+  # TEMP for testing: lowered from 60/20. Revert to 60/20 (or whatever
+  # values you settle on) before running this in production.
+  human_takeover_ttl_minutes: 60
+  waiting_human_ttl_minutes: 20
+
+storage:
+  engine: postgresql
+  # One shared PostgreSQL database for every account; isolation is logical,
+  # enforced by `account_id` on every row and in every query.
+  # AGENT_DATABASE_URL in the environment overrides this (it carries a password).
+  database_url: "postgresql://agent:agent@127.0.0.1:5432/agent"
+
+  persist:
+    tasks: true
+    actions: true
+    observations: false
+    failures: true
+    screen_memory: true
+
+memory:
+  enabled: true
+
+  recent_message_limit: 12
+  history_message_limit: 100
+  minimum_customer_fact_confidence: 0.70
+
+  summary:
+    summarize_after_messages: 20
+    source_message_limit: 40
+
+  screen_memory:
+    enabled: true
+    max_entries: 1000
+
+  action_history:
+    enabled: true
+    max_entries_per_task: 500
+
+paths:
+  screenshots: data/screenshots
+  logs: data/logs
+  temp: data/temp
+
+logging:
+  level: INFO
+  http_client_level: WARNING
+  reasoning_progress_seconds: 10
+  console: true
+  file: true
+  file_path: data/logs/agent.log
+
+  rotation:
+    enabled: true
+    max_size_mb: 20
+    backup_count: 5
+
+ai:
+  enabled: true
+  provider: gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+
+  planner:
+    enabled: true
+    # Chỉ dùng LLM chọn thao tác UI cho task không có skill và không có
+    # đường cố định. Mặc định TẮT: LLM thấy cả tin khách gửi trên màn hình,
+    # nên khách có thể điều khiển thao tác. Tắt thì task đó bị huỷ.
+    llm_fallback: false
+    model: gemini-3.1-flash-lite
+    temperature: 0.2
+    timeout_seconds: 60
+
+# LLM riêng cho pipeline chăm sóc khách hàng. Không dùng model này để thao tác UI.
+llm:
+  provider: gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-3.1-flash-lite
+  max_output_tokens: 2048
+  timeout_seconds: 30
+  max_retries: 2
+  retry_backoff_seconds: 1
+
+routing:
+  strong_llm_threshold: 0.65
+  # Số tin liên tiếp agent không hiểu được trước khi chuyển người (agent hỏi lại
+  # khách ở các tin trước đó).
+  unknown_intent_limit: 3
+  # Chuyển người ngay: phàn nàn thật (hàng lỗi, dị ứng...), đổi trả, và hỏi tình
+  # trạng đơn/vận đơn (agent không tra được vận đơn, không được tự đoán).
+  human_intents:
+    - complaint
+    - return_request
+    - order_status
+  registered_intents:
+    - greeting
+    - faq
+    - ask_product
+    - ask_price
+    - check_inventory
+    - ask_shipping
+    - ask_order
+    - order_status
+    - complaint
+    - return_request
+    # Nhận xét về vị, màu, cách pha của sản phẩm khách đã có: agent tự hướng dẫn,
+    # không chuyển người (khác `complaint`).
+    - product_feedback
+    - thank_you
+    - unknown
+  registered_stages:
+    - new
+    - browsing
+    - asking_product
+    - asking_price
+    - checking_inventory
+    - interested
+    - ordering
+    - after_sales
+    - complaint
+    - human_required
+    - closed
+
+messaging:
+  # Khi chạy main.py, watcher tự kiểm tra Inbox theo chu kỳ bên dưới.
+  enabled: true
+  max_reply_characters: 1000
+  # Khách đang đặt hàng đã gửi cả số điện thoại và địa chỉ -> agent vẫn gửi câu
+  # trả lời, rồi chuyển hội thoại cho nhân viên tạo đơn (agent không tự tạo
+  # đơn), kèm thông báo "Đơn hàng đủ thông tin". Mỗi cặp SĐT + địa chỉ một lần.
+  order_handoff: true
+  # Gửi cho khách khi tin của họ là loại TikTok Web không hiển thị được (tin
+  # nhắn thoại, ...): agent không gọi AI, gửi câu này, rồi chuyển hội thoại cho
+  # nhân viên (WAITING_HUMAN) và báo trên dashboard để nhân viên nghe/xem trên
+  # app TikTok. Câu này phải viết bằng ngôn ngữ trả lời của shop; shop khác
+  # ngôn ngữ dùng câu có sẵn của ngôn ngữ đó (agent/reply_language.py).
+  unsupported_message_reply: "Vui lòng đợi trong giây lát, nhân viên sẽ trả lời bạn"
+  # Ngôn ngữ agent dùng để trả lời khách: "vi" (tiếng Việt) hoặc "my" (tiếng
+  # Myanmar/Burmese). Agent LUÔN trả lời bằng ngôn ngữ này, kể cả khi khách
+  # viết thứ tiếng khác (agent/reply_language.py). Sửa qua Dashboard > Kịch bản
+  # hoặc PATCH /control/settings {"messaging.reply_language": "my"} - áp dụng
+  # ngay, không cần restart. Đây là mặc định cho workspace TẠO MỚI; workspace
+  # có từ trước khi có cài đặt này giữ tiếng Việt (dashboard_api/accounts.py).
+  reply_language: my
+  # Quy tắc giọng văn/bố cục chèn vào mọi prompt trả lời (agent/reply_generator.py,
+  # render_reply_style). KHÔNG đặt ở đây: mỗi ngôn ngữ trả lời có bộ mặc định
+  # riêng trong agent/reply_language.py (tiếng Việt "anh/chị", "Dạ"...; tiếng
+  # Myanmar viết riêng), tự đổi theo `reply_language`. Nhân viên sửa qua
+  # Dashboard > Kịch bản thì danh sách đó được lưu riêng cho workspace ([] = không
+  # chèn quy tắc nào). Quy tắc không bịa giá/tồn kho/đơn hàng luôn có hiệu lực.
+  # Các ví dụ hội thoại Khách/Agent do vận hành viên tự viết, được chèn vào mọi
+  # prompt trả lời (agent/reply_generator.py, ScenarioPolicy.render) làm mẫu
+  # few-shot. Chỉ là gợi ý về giọng điệu/cách xử lý - không bao giờ được dùng
+  # để bịa giá, tồn kho, đơn hàng hay chính sách. Sửa qua Dashboard > Kịch bản
+  # (lưu ngay cả khi agent chưa chạy) hoặc PATCH /control/settings
+  # {"messaging.scenario_examples": [{"customer": "...", "agent": "..."}]}.
+  scenario_examples: []
+  minimum_send_interval_seconds: 2
+  # Video có thể cần thời gian để TikTok nhận file/tạo preview trước khi Send.
+  media_stage_timeout_seconds: 60
+  # Worker claim leases are renewed while LangGraph is active. Another worker
+  # may recover a running task only after this lease expires.
+  task_lease_seconds: 180
+  send_lease_seconds: 180
+
+  media:
+    # No explicit root here on purpose: `main.py` falls back to
+    # `products.product_root` when this is unset, which `AccountRegistry.
+    # write_config` already scopes per account (`data/accounts/<id>/products`).
+    # A literal path here would override that and point every account back at
+    # one shared, now-retired directory.
+    allowed_mime_types:
+      - image/jpeg
+      - image/png
+      - image/webp
+      - image/gif
+      - video/mp4
+      - video/quicktime
+      - video/webm
+    max_image_size_mb: 10
+    max_video_size_mb: 25
+    # Repository-wide safety ceiling. TikTok may enforce a lower UI limit for
+    # a particular account/build; that rejection remains a safe upload failure.
+    max_dm_video_duration_seconds: 60
+    max_attachments: 2
+
+  # Ảnh/video trong hội thoại được tải về đĩa server để Dashboard hiển thị
+  # được lâu dài. URL của TikTok không dùng trực tiếp được: ảnh agent vừa gửi
+  # là `blob:` (chỉ sống trong đúng tab Chrome đó), ảnh DM nằm trên host
+  # `-private` trả 403 nếu không có cookie phiên, và cả URL công khai cũng có
+  # `x-expires` khoảng một tháng. Chi tiết: services/media_cache.py.
+  media_cache:
+    enabled: true
+    # Bỏ qua file lớn hơn mức này (giữ nguyên `src` để Dashboard tự thử CDN).
+    max_file_mb: 10
+    # Ngân sách cho cả workspace; vượt thì xoá file cũ nhất trước khi ghi mới.
+    max_total_mb: 512
+  reconciliation_delay_seconds: 5
+  human_handoff_enabled: true
+
+  auto_check:
+    enabled: true
+    interval_seconds: 20
+    # Agent giữ từng hội thoại tới khi khách nhắn xong, nên một lượt scan tốn
+    # thời gian và action budget theo số hội thoại. Ngân sách xấu nhất:
+    #   3 × (30s chờ + ~8s trả lời)      = ~114s  < policy.max_task_runtime_seconds (300)
+    #   3 × (30/3 snapshot + ~7 action)  = ~51    < policy.limits.max_actions_per_task (100)
+    # Người còn lại không bị mất: sổ unanswered đưa họ sang lượt scan kế tiếp.
+    max_conversations_per_scan: 3
+    # Tin nhắn chưa trả lời phải đứng yên bấy nhiêu giây thì agent mới trả lời,
+    # để khách nhắn xong cả loạt rồi mới nhận một câu trả lời duy nhất.
+    reply_quiet_period_seconds: 10
+    # Agent ở lại đúng hội thoại đó tới khi khách nhắn xong rồi mới trả lời và
+    # chuyển sang người tiếp theo. Hết ngần này giây mà khách vẫn đang nhắn thì
+    # để lại cho lượt scan sau, không trả lời nửa chừng.
+    # Phải LỚN HƠN reply_quiet_period_seconds, nếu không vòng chờ không bao giờ
+    # kịp chín và mọi khách đều bị hoãn sang lượt sau như trước đây.
+    reply_wait_timeout_seconds: 30
+    max_burst_wait_seconds: 30
+    reply_wait_poll_seconds: 3
+    request_slot_reservation: 1
+    max_virtual_scroll_pages: 50
+    # false = vẫn mở và quét panel ở mỗi lượt. Badge TikTok đôi khi cập nhật
+    # chậm hoặc bị xóa ngay khi chat vừa mở, nên không dùng badge âm tính làm
+    # bằng chứng rằng không có khách đang chờ.
+    trust_negative_unread_badge: false
+    completed_task_retention: 100
+    # TikTok keeps first-contact customers in a separate Message requests
+    # sub-list. Accepting is required before the normal composer can reply.
+    # Delete/Report are never automated.
+    auto_accept_message_requests: true
+    message_request_retry_prompt: "Dạ shop đã nhận được tin nhắn, mình kiểm tra và phản hồi ngay ạ."
+    # Tin đã được đọc ở nơi khác (app TikTok trên điện thoại, Seller Center) mất
+    # dấu "chưa đọc", nên lượt quét không mở hội thoại đó và tin không lên
+    # dashboard. Khi lượt quét không còn tin chưa đọc, agent so đoạn xem trước
+    # của `sync_rows` dòng đầu với lần đồng bộ trước và mở `sync_per_scan` hội
+    # thoại đã đổi để chép tin vào database - KHÔNG tự trả lời những tin này.
+    # Mỗi hội thoại đồng bộ lại tối đa 1 lần / `sync_cooldown_seconds`.
+    sync_read_elsewhere: true
+    sync_rows: 10
+    sync_per_scan: 1
+    sync_cooldown_seconds: 300
+
+  # Tự động nhắc lại khách đã im lặng: mỗi rule là "im lặng bao nhiêu phút kể
+  # từ tin cuối cùng của shop thì gửi tin gì" (messaging/followup_scheduler.py).
+  # Chỉ nhắc trong hội thoại đã có sẵn (khách từng nhắn ít nhất 1 lần), không
+  # bao giờ nhắn cho người lạ, và mỗi rule chỉ gửi đúng 1 lần cho mỗi lần khách
+  # im lặng - khách nhắn lại thì lần im lặng kế tiếp mới được nhắc tiếp.
+  # Sửa qua Dashboard > Automation (lưu ngay cả khi agent chưa chạy) hoặc
+  # PATCH /control/settings {"messaging.follow_up.rules": [{"delay_minutes":
+  # 60, "message": "...", "enabled": true}]}.
+  follow_up:
+    enabled: true
+    interval_seconds: 60
+    rules: []
+
+  # Giờ hoạt động. Chỉ chặn việc BẮT ĐẦU công việc mới; task đang chạy vẫn được
+  # hoàn tất để không bỏ khách giữa chừng. days rỗng = mọi ngày.
+  # Khoảng qua đêm hợp lệ (vd start 22:00, end 06:00).
+  schedule:
+    enabled: false
+    start: "08:00"
+    end: "22:00"
+    days: []
+
+  business_tools:
+    allowed:
+      - check_inventory
+      - get_product
+      - get_shipping
+      - get_order
+      - get_customer
+      - get_conversation_history
+
+# Mỗi sản phẩm nằm trong <product_root>/<id>/product.json; media dùng đường dẫn
+# tương đối từ chính thư mục sản phẩm đó. `product_root` dưới đây chỉ là giá trị
+# dự phòng cuối cùng - mỗi account thật luôn có một thư mục catalogue riêng
+# (`data/accounts/<account_id>/products`), do `AccountRegistry.write_config`
+# ghi đè khi tạo/khởi động account, nên giá trị này hiếm khi thực sự được dùng.
+products:
+  enabled: true
+  product_root: data/products
+  # Công tắc truy vấn thông tin sản phẩm:
+  #   true  -> câu hỏi về sản phẩm/tồn kho phải truy vấn danh mục trước khi trả
+  #            lời; lookup thất bại thì chuyển cho người thật.
+  #   false -> không truy vấn DB, LLM tự trả lời dựa trên ngữ cảnh hội thoại.
+  # Chỉ ảnh hưởng get_product/check_inventory; get_order, get_customer,
+  # get_shipping vẫn dùng tool như cũ.
+  lookup_enabled: true
+  # Thông tin giao hàng của shop - agent được nói ra và bộ kiểm duyệt chấp nhận
+  # như giá sản phẩm (kể cả tổng = số lượng x giá + phí ship). Để trống (mặc
+  # định) = shop chưa khai báo: agent không được tự nói phí ship. Đặt riêng cho
+  # từng workspace qua Dashboard > Kịch bản > Giao hàng. Ví dụ:
+  #   shipping:
+  #     fee: 6000                # phí ship, số
+  #     free_from_quantity: 2    # miễn ship từ số lượng này
+  #     delivery_days: "2-5"     # thời gian giao (chữ)
+  #     cash_on_delivery: true   # nhận hàng mới trả tiền
+  #     area: "Toàn Myanmar"     # khu vực giao
+  shipping: null
+  # Sản phẩm mặc định: khách hỏi giá/thông tin/ảnh mà KHÔNG nêu tên sản phẩm thì
+  # hiểu là hỏi sản phẩm này. Để trống (mặc định): shop chỉ có đúng 1 sản phẩm lẻ
+  # đang bán thì tự dùng sản phẩm đó; có nhiều sản phẩm lẻ thì agent hỏi lại khách.
+  # Combo không bao giờ là mặc định (combo hiện kèm theo sản phẩm lẻ). Chọn trên
+  # Dashboard > Sản phẩm > "Đặt làm mặc định".
+  default_product_id: null
+
+# Sleep/Wake: dừng Chrome của một workspace khi không có hoạt động khách hàng
+# trong idle_threshold_seconds để giải phóng RAM, giữ nguyên agent process và
+# profile Chrome. Đọc bởi supervisor (dashboard_api), không phải agent process
+# - vì vậy không nằm trong danh sách override per-account của
+# AccountRegistry.write_config. enabled=false tắt hoàn toàn tính năng, không
+# cần revert code.
+sleep:
+  # Tắt: workspace ngủ thì khách phải chờ tới lần thức kế tiếp (~5 phút) mới
+  # được đọc tin và trả lời. Bật lại chỉ khi server thiếu RAM.
+  enabled: false
+  idle_threshold_seconds: 900      # 15 phút
+  wake_poll_interval_seconds: 240   # 4 phút
+  wake_settle_seconds: 60
+  # > 60s: a dashboard tab in the background has its 15s heartbeat timer
+  # throttled by the browser to once a minute, and must not look absent.
+  heartbeat_grace_seconds: 90
+  # Trên máy đang chạy nhiều workspace cùng lúc, Chrome cold-start có thể mất
+  # hơn 10s (đĩa/CPU bận). 10s từng đẩy một workspace vào RECOVERY/DEGRADED
+  # dù Chrome thực ra chỉ chậm, không hỏng - nới lên 30s để chịu được điều đó.
+  wake_cdp_timeout_seconds: 30
+  wake_poll_seconds: 0.5
+  max_concurrent_wake: 2
+  wake_jitter_seconds: 30
+  recovery_max_retries: 3
+  sweep_interval_seconds: 30

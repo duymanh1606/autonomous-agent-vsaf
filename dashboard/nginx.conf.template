@@ -1,0 +1,299 @@
+# Rendered by the nginx image's docker-entrypoint (envsubst) into
+# /etc/nginx/conf.d/default.conf. SUPERVISOR_HOST/SUPERVISOR_PORT and the two
+# listen addresses come from the container environment (see compose.yaml).
+# Only names that exist as environment variables are substituted, which is why
+# `$host`, `$scheme`, `$remote_addr` and friends survive as nginx variables.
+#
+# TWO LISTENERS, ON PURPOSE. Everything that fronts this container - a
+# cloudflared tunnel, a host nginx doing TLS, or nothing at all during a test -
+# reaches it from the same place, so nothing about the connection itself says
+# which way a request came in. The listener it arrived at does, and each one
+# stamps `X-Dashboard-Edge` over whatever the client sent:
+#
+#   ${DASHBOARD_LISTEN_PORT}  <- the public way in, whatever fronts it.
+#                                Marked `cloudflare`: when CF_ACCESS_* is
+#                                configured the supervisor demands a valid
+#                                Cloudflare Access assertion here, so a tunnel
+#                                misconfigured to skip its Access application
+#                                cannot quietly deliver anonymous traffic.
+#                                With CF_ACCESS_* unset the marker is inert.
+#   ${DASHBOARD_LOCAL_PORT}   <- `ssh -L` only, always loopback. Marked
+#                                `local`, never asked for an assertion, so
+#                                requiring one above can never lock out the
+#                                operator.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# What the browser's own hop used, which is what decides whether the session
+# cookie gets its `Secure` flag. Whatever proxy sits in front (cloudflared, a
+# host nginx doing TLS) states it; when nothing does - the dashboard reached
+# directly, as in a plain-HTTP test deployment - the scheme of this very
+# connection is the truth.
+#
+# This is deliberately NOT hardcoded to `https`. Hardcoding it made the cookie
+# `Secure` even when the browser was on plain HTTP, and a browser will not send
+# a Secure cookie back over HTTP: login appeared to succeed and then instantly
+# logged you out again. A forged value only makes the caller's own cookie
+# stricter, and `DASHBOARD_ENV=production` forces `Secure` regardless of this
+# header, so a real deployment never depends on it.
+map $http_x_forwarded_proto $fwd_proto {
+    default $http_x_forwarded_proto;
+    ''      $scheme;
+}
+
+# ------------------------------------------------------------------ public
+server {
+    # `network_mode: host` means there is no port mapping to restrict, so this
+    # line is the only thing deciding who can reach the dashboard.
+    # DASHBOARD_LISTEN_ADDR defaults to 127.0.0.1 (something on this host -
+    # cloudflared, or a host nginx terminating TLS - forwards to it); set it to
+    # 0.0.0.0 only when this listener is itself meant to face the network.
+    listen ${DASHBOARD_LISTEN_ADDR}:${DASHBOARD_LISTEN_PORT};
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri /index.html;
+    }
+
+    # The Web Push service worker (public/sw.js). Browsers re-check it on
+    # their own, but a cached copy would keep an old one running after a
+    # deploy; it is tiny, so never cache it.
+    location = /sw.js {
+        add_header Cache-Control "no-cache";
+        try_files $uri =404;
+    }
+
+    location /api/ {
+        # Ordinary API traffic is small. The 80MB ceiling belongs to media
+        # uploads and nothing else - see the nested block below.
+        client_max_body_size 2m;
+
+        proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # REPLACE, not `$proxy_add_x_forwarded_for`. Appending kept whatever
+        # the client claimed as the left-most entry, which is what made every
+        # IP-keyed rate limit bypassable with one header. The supervisor no
+        # longer reads this at all (it uses CF-Connecting-IP, and only when
+        # Cloudflare Access has verified the request), but leaving a
+        # client-controlled chain in place is how that bug comes back.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $fwd_proto;
+        proxy_set_header X-Dashboard-Edge cloudflare;
+
+        # /api/events is a WebSocket; the Upgrade headers below are ignored
+        # for ordinary HTTP requests, so one location block covers both.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+
+        # Product media uploads are capped at 80MB by the supervisor
+        # (MAX_VIDEO_BYTES in dashboard_api/main.py); nginx's default of 1MB
+        # sat in front of that and rejected every real photo or video with
+        # 413 before the supervisor ever saw it.
+        #
+        # Two nginx rules make this nesting work, and quietly break it if
+        # anyone edits it without knowing them:
+        #   * proxy_set_header is inherited from the enclosing level ONLY
+        #     while this level declares none of its own. Add a single
+        #     proxy_set_header here and this block silently loses Host,
+        #     X-Forwarded-*, X-Dashboard-Edge and the Upgrade pair.
+        #   * proxy_pass is NOT inherited, so it has to be repeated.
+        # The product id pattern is deliberately loose: the SPA
+        # encodeURIComponent()s it and nginx matches on the decoded URI.
+        location ~ ^/api/accounts/[^/]+/products/.+/media$ {
+            client_max_body_size 80m;
+            proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT};
+        }
+
+        # Files attached to a chat message (dashboard_api/routes/chat_media.py:
+        # images up to 10MB, videos up to 25MB). Without this block they hit
+        # the 2m ceiling above and failed with 413 before the supervisor saw
+        # them. Same two rules as the block above: no proxy_set_header here,
+        # and proxy_pass repeated.
+        location ~ ^/api/accounts/[^/]+/chat-attachments$ {
+            client_max_body_size 26m;
+            proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT};
+        }
+    }
+
+    # ------------------------------------------------------------ noVNC
+    # Each workspace's websockify listens on 127.0.0.1:<novnc_port> and
+    # nothing else - that loopback binding is what keeps a passwordless
+    # x11vnc off the network, and it stays exactly as it was. This block is
+    # the one authorized way across it: same origin as the dashboard, so the
+    # browser sends the session cookie, and every single request is checked
+    # by the supervisor first.
+    #
+    # `auth_request` makes nginx issue an internal subrequest before serving
+    # anything here. 2xx proxies, 401/403 are passed back to the client, and
+    # any other outcome - including the supervisor being down - becomes a
+    # 500. Fail-closed by construction: there is no path through this block
+    # that skips the check.
+    #
+    # The port is not hardcoded. It comes back on the auth response as
+    # X-Novnc-Port, so a workspace created after nginx started works with no
+    # config change and no reload.
+    # The workspace id is matched but deliberately not captured: nginx
+    # never needs it, because the supervisor reads it back out of
+    # X-Original-URI. One place parses it, so the two cannot drift.
+    location ~ ^/vnc/(?:[A-Za-z0-9._-]+)/(?<vnc_rest>.*)$ {
+        auth_request /_vnc_auth;
+        auth_request_set $vnc_port $upstream_http_x_novnc_port;
+
+        # A variable in proxy_pass means nginx resolves the upstream per
+        # request instead of at startup, which is the whole point here. It
+        # also means the URI must be written out explicitly - nginx does not
+        # append the matched path for you once a variable is present.
+        proxy_pass http://127.0.0.1:$vnc_port/$vnc_rest$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # The VNC stream is a WebSocket, and auth_request has already run on
+        # the upgrade request itself - so the handshake is authorized too,
+        # not just the page that opens it.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        # A VNC session is idle for long stretches while nobody moves the
+        # mouse; the default 60s would tear it down mid-view.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    # `internal` is load-bearing: without it this is a public endpoint that
+    # maps a workspace id to its port for anyone who asks.
+    location = /_vnc_auth {
+        internal;
+        proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT}/api/vnc-auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        # What the supervisor parses the workspace id out of. The subrequest
+        # URI is /_vnc_auth, so the original path has to be carried over
+        # explicitly.
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $fwd_proto;
+        proxy_set_header X-Dashboard-Edge cloudflare;
+    }
+}
+
+# ------------------------------------------------------- operator (ssh -L)
+server {
+    listen 127.0.0.1:${DASHBOARD_LOCAL_PORT};
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri /index.html;
+    }
+
+    # The Web Push service worker (public/sw.js). Browsers re-check it on
+    # their own, but a cached copy would keep an old one running after a
+    # deploy; it is tiny, so never cache it.
+    location = /sw.js {
+        add_header Cache-Control "no-cache";
+        try_files $uri =404;
+    }
+
+    location /api/ {
+        client_max_body_size 2m;
+
+        proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $fwd_proto;
+        proxy_set_header X-Dashboard-Edge local;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+
+        location ~ ^/api/accounts/[^/]+/products/.+/media$ {
+            client_max_body_size 80m;
+            proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT};
+        }
+
+        # Files attached to a chat message (dashboard_api/routes/chat_media.py:
+        # images up to 10MB, videos up to 25MB). Without this block they hit
+        # the 2m ceiling above and failed with 413 before the supervisor saw
+        # them. Same two rules as the block above: no proxy_set_header here,
+        # and proxy_pass repeated.
+        location ~ ^/api/accounts/[^/]+/chat-attachments$ {
+            client_max_body_size 26m;
+            proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT};
+        }
+    }
+
+    # ------------------------------------------------------------ noVNC
+    # Each workspace's websockify listens on 127.0.0.1:<novnc_port> and
+    # nothing else - that loopback binding is what keeps a passwordless
+    # x11vnc off the network, and it stays exactly as it was. This block is
+    # the one authorized way across it: same origin as the dashboard, so the
+    # browser sends the session cookie, and every single request is checked
+    # by the supervisor first.
+    #
+    # `auth_request` makes nginx issue an internal subrequest before serving
+    # anything here. 2xx proxies, 401/403 are passed back to the client, and
+    # any other outcome - including the supervisor being down - becomes a
+    # 500. Fail-closed by construction: there is no path through this block
+    # that skips the check.
+    #
+    # The port is not hardcoded. It comes back on the auth response as
+    # X-Novnc-Port, so a workspace created after nginx started works with no
+    # config change and no reload.
+    # The workspace id is matched but deliberately not captured: nginx
+    # never needs it, because the supervisor reads it back out of
+    # X-Original-URI. One place parses it, so the two cannot drift.
+    location ~ ^/vnc/(?:[A-Za-z0-9._-]+)/(?<vnc_rest>.*)$ {
+        auth_request /_vnc_auth;
+        auth_request_set $vnc_port $upstream_http_x_novnc_port;
+
+        # A variable in proxy_pass means nginx resolves the upstream per
+        # request instead of at startup, which is the whole point here. It
+        # also means the URI must be written out explicitly - nginx does not
+        # append the matched path for you once a variable is present.
+        proxy_pass http://127.0.0.1:$vnc_port/$vnc_rest$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # The VNC stream is a WebSocket, and auth_request has already run on
+        # the upgrade request itself - so the handshake is authorized too,
+        # not just the page that opens it.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        # A VNC session is idle for long stretches while nobody moves the
+        # mouse; the default 60s would tear it down mid-view.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    # `internal` is load-bearing: without it this is a public endpoint that
+    # maps a workspace id to its port for anyone who asks.
+    location = /_vnc_auth {
+        internal;
+        proxy_pass http://${SUPERVISOR_HOST}:${SUPERVISOR_PORT}/api/vnc-auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        # What the supervisor parses the workspace id out of. The subrequest
+        # URI is /_vnc_auth, so the original path has to be carried over
+        # explicitly.
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $fwd_proto;
+        proxy_set_header X-Dashboard-Edge local;
+    }
+}

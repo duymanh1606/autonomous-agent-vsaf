@@ -1,0 +1,45 @@
+# Secrets. `.env.*` catches the copies an editor leaves behind - nano writes
+# `.env.save` when it exits abnormally, and that file holds the same
+# DASHBOARD_SECRET_KEY and POSTGRES_PASSWORD as the original. It was not
+# ignored before, so it showed up as untracked, blocked deploy/update.sh's
+# clean-tree check, and was one `git add .` away from being published.
+# `.env.example` carries no real values and stays tracked.
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+.idea/
+.vscode/
+
+.DS_Store
+
+# Everything under data/ is machine-generated at runtime (chrome profiles,
+# screenshots, logs, per-account databases, test reports, GUI training
+# captures) EXCEPT the product catalogue: that's sample fixture data that
+# the dashboard's Products page and multiple tests read directly, so it must
+# ship with the repo.
+/data/*
+!/data/products/
+
+ai_models/
+# Per-account configs and Chrome profiles are machine-specific
+configs/accounts/
+
+# TypeScript incremental build cache - regenerated every build, not source.
+dashboard/tsconfig.tsbuildinfo
+
+# Extension signing key + packed artifacts (scripts/pack_extension.sh) -
+# extension.pem is a private key and must never be committed; the .crx/xml
+# are regenerated from extension/ + that key, also machine-specific (the
+# update manifest embeds an absolute file:// path).
+extension_build/
+
+
+GIAI_THICH_CHI_TIET_AUTONOMOUS_AGENT.md
+
+# Bản đồ mã nguồn sinh cục bộ (scripts/gen_code_map.py) - tham chiếu nội bộ, không commit
+docs/CODE_MAP.md

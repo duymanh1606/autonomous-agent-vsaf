@@ -1,0 +1,18 @@
+# Fixed TikTok Web coordinates are measured in CSS viewport pixels.
+# Add a target only after measuring it on the base viewport below.
+base_viewport:
+  width: 1008
+  height: 714
+
+coordinates:
+  feed:
+    messages: [37, 351]
+
+# Action-to-target routing belongs to configuration so controllers and
+# workflows never contain UI coordinates or target-specific screen mappings.
+actions:
+  platform.open_inbox:
+    target: messages
+    gemini_target: inbox_button
+    expected_state: messages
+    instruction: Click the Messages button

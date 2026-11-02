@@ -1,0 +1,174 @@
+<!doctype html>
+<!--
+  A stand-in for TikTok's DM screen: enough of the real DOM contract that the
+  Chrome extension recognises it, extracts the thread from it, and can act on
+  it. It exists because the seam between the extension's DOM reading and the
+  agent's model of it is where every field bug so far has come from - an
+  answered thread read as unreadable, a blind bridge read read as the wrong
+  recipient - and none of those are reachable by a unit test with a stubbed
+  DOM.
+
+  What is deliberately real here:
+    * the `data-e2e` attributes the extension's selectors look for
+      (extension/platforms/tiktok.js), including the nav, the conversation
+      list, the chat box, the message list and the composer;
+    * direction carried the way TikTok carries it - as a whole word in the
+      row's class (`...Self` / `...Other`), which is what the extension reads
+      after layout;
+    * a send button that behaves: it appends an outbound bubble with whatever
+      the composer holds and clears it, so a reply the agent sends can be
+      verified from the DOM exactly as it is in production.
+
+  What is not real: styling, virtualised scrolling, and TikTok's actual class
+  hashes. The test drives this page through the same ChromeBrowserTool and the
+  same CDP attach the agent uses.
+-->
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Tin nhắn</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    #nav { display: flex; gap: 12px; padding: 8px 16px; border-bottom: 1px solid #eee; }
+    #layout { display: flex; height: 520px; }
+    #list { width: 280px; border-right: 1px solid #eee; overflow-y: auto; }
+    .row { padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+    .row[aria-selected="true"] { background: #f2f2f7; }
+    #chat { flex: 1; display: flex; flex-direction: column; }
+    #thread { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .DivMessageRowSelf { display: flex; justify-content: flex-end; }
+    .DivMessageRowOther { display: flex; justify-content: flex-start; }
+    .bubble { max-width: 70%; padding: 8px 10px; border-radius: 12px; background: #eee; }
+    .DivMessageRowSelf .bubble { background: #d5f3e4; }
+    #composerRow { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #eee; }
+    #editor { flex: 1; min-height: 34px; border: 1px solid #ddd; border-radius: 8px; padding: 8px; }
+    #send { padding: 8px 14px; }
+  </style>
+</head>
+<body>
+  <div id="nav" data-e2e="nav-bar">
+    <a href="#" data-e2e="nav-messages" aria-label="Messages">
+      Tin nhắn<sup data-e2e="message-badge" id="badge" hidden>1</sup>
+    </a>
+    <a href="#" data-e2e="nav-notification" aria-label="Activity">Hoạt động</a>
+    <a href="#" data-e2e="nav-profile" aria-label="Profile">Trang cá nhân</a>
+  </div>
+
+  <div id="layout">
+    <div id="list" data-e2e="dm-new-conversation-list"></div>
+
+    <div id="chat" data-e2e="dm-new-chatbox">
+      <div id="chatHeader">
+        <span data-e2e="dm-new-chat-nickname" id="chatNickname"></span>
+      </div>
+      <div id="thread" data-e2e="chat-message-list" role="log"></div>
+      <div id="composerRow" data-e2e="message-input-area">
+        <div id="editor" contenteditable="true" role="textbox"
+             data-e2e="dm-new-input-editor" aria-label="Nhập tin nhắn"></div>
+        <button id="send" data-e2e="message-send" aria-label="Send">Gửi</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // The page's state is handed in by the test through `?state=<name>`, so one
+    // fixture can present the shapes that mattered in production.
+    const STATES = {
+      // A customer asked something and nobody has answered: the ordinary case.
+      unanswered: {
+        conversations: [
+          { name: "manh1", preview: "áo này còn size M không?", unread: true },
+          { name: "helloworld!!", preview: "Dạ em gửi ảnh ạ", unread: false },
+        ],
+        active: "manh1",
+        messages: [
+          { direction: "INBOUND", text: "chào shop" },
+          { direction: "OUTBOUND", text: "Dạ em nghe ạ" },
+          { direction: "INBOUND", text: "áo này còn size M không?" },
+        ],
+      },
+      // The newest rendered message is ours. Read as "unreadable" for months,
+      // which escalated an answered thread to a person after 30 scans.
+      answered: {
+        conversations: [{ name: "manh1", preview: "Dạ còn size M ạ", unread: false }],
+        active: "manh1",
+        messages: [
+          { direction: "INBOUND", text: "áo này còn size M không?" },
+          { direction: "OUTBOUND", text: "Dạ còn size M ạ" },
+        ],
+      },
+      // Only our own message is rendered at all - the exact shape of the live
+      // thread that kept being handed to a human.
+      outbound_only: {
+        conversations: [{ name: "Dury_1702", preview: "Dạ em gửi thông tin ạ", unread: false }],
+        active: "Dury_1702",
+        messages: [{ direction: "OUTBOUND", text: "Dạ em gửi thông tin ạ" }],
+      },
+    };
+
+    const state = STATES[new URLSearchParams(location.search).get("state") || "unanswered"];
+
+    function renderConversations() {
+      const list = document.getElementById("list");
+      list.innerHTML = "";
+      for (const row of state.conversations) {
+        const item = document.createElement("div");
+        item.className = "row";
+        item.dataset.e2e = "dm-new-conversation-item";
+        item.setAttribute("aria-selected", String(row.name === state.active));
+        if (row.unread) item.setAttribute("aria-label", "unread");
+        item.innerHTML =
+          '<div data-e2e="dm-new-conversation-nickname"></div>' +
+          '<div data-e2e="chat-list-msg"></div>' +
+          (row.unread ? '<sup data-e2e="conversation-unread">1</sup>' : "");
+        item.querySelector('[data-e2e="dm-new-conversation-nickname"]').textContent = row.name;
+        item.querySelector('[data-e2e="chat-list-msg"]').textContent = row.preview;
+        item.addEventListener("click", () => {
+          state.active = row.name;
+          render();
+        });
+        list.appendChild(item);
+      }
+    }
+
+    function appendMessage(message) {
+      const thread = document.getElementById("thread");
+      const row = document.createElement("div");
+      // Direction as a whole word in the class, the way TikTok carries it.
+      row.className =
+        message.direction === "OUTBOUND" ? "DivMessageRowSelf" : "DivMessageRowOther";
+      row.dataset.e2e = "chat-item";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.dataset.e2e = "chat-text";
+      bubble.textContent = message.text;
+      row.appendChild(bubble);
+      thread.appendChild(row);
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    function render() {
+      renderConversations();
+      document.getElementById("chatNickname").textContent = state.active;
+      document.getElementById("thread").innerHTML = "";
+      state.messages.forEach(appendMessage);
+      const unread = state.conversations.filter((row) => row.unread).length;
+      const badge = document.getElementById("badge");
+      badge.hidden = unread === 0;
+      badge.textContent = String(unread);
+    }
+
+    document.getElementById("send").addEventListener("click", () => {
+      const editor = document.getElementById("editor");
+      const text = (editor.innerText || "").trim();
+      if (!text) return;
+      state.messages.push({ direction: "OUTBOUND", text });
+      appendMessage({ direction: "OUTBOUND", text });
+      editor.innerHTML = "";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    render();
+  </script>
+</body>
+</html>

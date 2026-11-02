@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "Autonomous Web Agent Bridge",
+  "version": "0.2.1",
+  "description": "DOM-first perception and action bridge between social web apps and the local Python agent.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.tiktok.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.tiktok.com/*"
+      ],
+      "js": [
+        "dom/notification_hook.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://*.tiktok.com/*"
+      ],
+      "js": [
+        "platforms/registry.js",
+        "platforms/tiktok.js",
+        "dom/locator.js",
+        "dom/extractor.js",
+        "dom/state_detector.js",
+        "dom/observer.js",
+        "actions/click.js",
+        "actions/type.js",
+        "actions/scroll.js",
+        "actions/attach.js",
+        "actions/executor.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

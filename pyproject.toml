@@ -1,0 +1,108 @@
+[project]
+name = "autonomous-tiktok-ui-agent"
+version = "0.1.0"
+description = "Policy-gated local TikTok Web UI agent for Chrome"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Password hashing for the dashboard's own operator login.
+    "bcrypt>=4,<5",
+    "fastapi>=0.115,<1",
+    "httpx>=0.27,<1",
+    "langgraph>=1,<2",
+    "langgraph-checkpoint-postgres>=2,<3",
+    "playwright>=1.50,<2",
+    "psycopg[binary,pool]>=3.2,<4",
+    "pydantic>=2.8,<3",
+    # Signs the dashboard's own session cookie (HS256) - unrelated to the
+    # agent's TikTok auth state. The [crypto] extra pulls in `cryptography`,
+    # which is what makes RS256 *verification* possible: Cloudflare Access
+    # signs its Cf-Access-Jwt-Assertion with RS256, and without the extra
+    # pyjwt only registers the HS* algorithms, so dashboard_api/cf_access.py
+    # would fail at runtime rather than at install time.
+    "pyjwt[crypto]>=2.8,<3",
+    "pyyaml>=6,<7",
+    # Required by FastAPI to parse multipart/form-data - the product-media
+    # upload endpoint needs it.
+    "python-multipart>=0.0.12,<1",
+    "sse-starlette>=2.1,<4",
+    "uvicorn[standard]>=0.30,<1",
+    # Present transitively via playwright today; the dashboard WebSocket
+    # depends on it directly, so it is declared rather than borrowed.
+    "websockets>=13,<16",
+    "pywebpush>=2.5.0",
+]
+
+[dependency-groups]
+# The test runner was previously only ever installed by hand, so `uv sync`
+# on a fresh clone produced a checkout whose own test suite could not be run
+# - and `uv sync --frozen` actively removed it. Declaring it here is what
+# makes the suite reproducible, in CI and on a new machine alike.
+#
+# The tests themselves need nothing else: they are plain `unittest`, and the
+# database-backed ones reach PostgreSQL through psycopg, already a runtime
+# dependency above.
+dev = [
+    "pytest>=8,<10",
+]
+
+[tool.uv]
+package = false
+
+# Lint that CI enforces (`uvx ruff check .`). Deliberately small: every rule
+# here catches a real bug class (undefined or shadowed names, unused imports
+# and variables that hide a mistake, mutable defaults, loop-variable capture)
+# and the tree passes it today, so a new violation is a new problem, not noise.
+# BLE001 (blind `except Exception`): a broad catch must log with a traceback
+# (`logger.exception` / `exc_info=True`) or re-raise. Fail-closed is intended,
+# silence is not. A deliberate fallback (a reachability probe, a wait that
+# timing out means "no") carries `# noqa: BLE001 - <why>` on its except line.
+# Not enabled, and why:
+# * I (import order) - style only.
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["dashboard", "extension", "extension_build", "data"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "BLE"]
+# B008: `Body(...)`, `File(...)`, `Query(...)` as defaults is how FastAPI
+# declares parameters, not the shared-mutable-default bug the rule is about.
+# E701/E702/E731/E741: layout and naming only (one-line `if x: y`, a lambda
+# bound to a name, a variable called `l`). B905: `zip(strict=False)` spelled
+# out everywhere would be noise, not safety.
+ignore = ["B008", "E701", "E702", "E731", "E741", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test harnesses and the code-map generator catch broadly on purpose: a probe
+# that fails is a result to report, not a production error to trace.
+"tests/**" = ["BLE001"]
+"scripts/**" = ["BLE001"]
+
+# Static type checking, run in CI (`uvx mypy@1.13.0 --python-executable
+# .venv/bin/python`). Gradual on purpose: `files` lists the modules that pass
+# today - storage, the reply pipeline, the policy gate, config loading and the
+# supervisor's alerting/config code, i.e. where a wrong type ends in a wrong
+# send or a lost row. Add a module to the list once it passes; never widen it
+# by adding `# type: ignore` in bulk.
+[tool.mypy]
+python_version = "3.10"
+files = [
+    "storage",
+    "agent",
+    "core/policy.py",
+    "load_config.py",
+    "dashboard_api/alerts.py",
+    "dashboard_api/account_config.py",
+    "dashboard_api/health_monitor.py",
+    "dashboard_api/notifications.py",
+    "dashboard_api/web_push.py",
+]
+explicit_package_bases = true
+# Imports outside `files` are followed for their types, not reported on.
+follow_imports = "silent"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# PyYAML ships no type information and its stubs are not a dependency here.
+disable_error_code = ["import-untyped"]

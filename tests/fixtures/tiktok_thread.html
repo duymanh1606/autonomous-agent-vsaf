@@ -1,0 +1,266 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TikTok thread fixtures</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .surface { width: 900px; }
+  .thread { height: 300px; overflow-y: auto; padding: 8px; }
+  .row { display: flex; width: 100%; margin: 6px 0; }
+  .bubble { max-width: 60%; padding: 8px 12px; border-radius: 12px; background: #eee; }
+  .composer { width: 100%; }
+</style>
+
+<!-- A: the shape TikTok ships today - one data-e2e for both sides, the side
+     itself expressed only through the row's justify-content. -->
+<div class="surface" id="case-a">
+  <div data-e2e="chat-message-list" class="css-1abcde-DivChatBox thread">
+    <div class="css-2fghij-DivItemWrapper row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="css-3klmno-DivMessageContainer bubble">
+        <p data-e2e="chat-text">xin chào</p>
+      </div>
+    </div>
+    <div class="css-2fghij-DivItemWrapper row" style="justify-content: flex-end">
+      <div data-e2e="chat-item" class="css-3klmno-DivMessageContainer bubble">
+        <p data-e2e="chat-text">Chào bạn, shop có thể giúp gì ạ?</p>
+      </div>
+    </div>
+    <div class="css-2fghij-DivItemWrapper row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="css-3klmno-DivMessageContainer bubble">
+        <p data-e2e="chat-text">áo này giá bao nhiêu</p>
+      </div>
+    </div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- B: no chat-message-list at all, no data-e2e on the bubbles, class names are
+     pure build hashes. Only the scroll container and the alignment remain. -->
+<div class="surface" id="case-b" hidden>
+  <div class="css-9zzzzz-DivScroll thread">
+    <div class="css-8yyyyy row"><div class="css-7xxxxx bubble" style="margin-right: auto">alo shop ơi</div></div>
+    <div class="css-8yyyyy row"><div class="css-7xxxxx bubble" style="margin-left: auto">Dạ em nghe ạ</div></div>
+    <div class="css-8yyyyy row"><div class="css-7xxxxx bubble" style="margin-right: auto">còn size M không</div></div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- C: nothing but absolute positioning - no flex, no markers. Position inside
+     the thread is the only remaining evidence. -->
+<div class="surface" id="case-c" hidden>
+  <div class="css-6wwwww thread" style="position: relative">
+    <div class="css-5vvvvv bubble" style="position:absolute; left: 10px; top: 10px; width: 200px">ship về Hà Nội bao lâu</div>
+    <div class="css-5vvvvv bubble" style="position:absolute; right: 10px; top: 60px; width: 200px">Dạ 2-3 ngày ạ</div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- D: a banner the platform writes into the thread - full width, centred, no
+     side to it. It is not a message and must not be reported as one. -->
+<div class="surface" id="case-d" hidden>
+  <div class="css-4uuuuu thread">
+    <div class="css-3ttttt" style="width: 100%; text-align: center">Message request accepted. You can start chatting.</div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- F: a bubble with no marker, no alignment and sitting dead centre. Nothing
+     can place it, so it must be UNKNOWN and carry its DOM metadata. -->
+<div class="surface" id="case-f" hidden>
+  <div class="css-2sssss thread" style="position: relative">
+    <div class="css-1rrrrr bubble" style="position:absolute; left: 340px; top: 10px; width: 200px">tin nhắn không rõ phía</div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- G: production shape - no `chat-message-list`, `data-e2e="chat-item"` on
+     every bubble, a platform banner in the thread, and the inbox rows rendered
+     right next to it. The banner must not hide the customer's messages, and an
+     inbox row must never be read as one. -->
+<div class="surface" id="case-g" hidden style="display: flex">
+  <div class="css-0qqqqq-DivChatListContainer" style="width: 260px">
+    <div data-e2e="chat-list-item" class="row"><div>helloworld!!</div><div>Chào cậu</div></div>
+    <div data-e2e="chat-list-item" class="row"><div>ai đó</div><div>ok shop</div></div>
+  </div>
+  <div style="width: 640px">
+    <div class="css-9ppppp-DivChatBox thread">
+      <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper" style="width: 100%; text-align: center">Message request accepted. You can start chatting.</div>
+      <div class="row" style="justify-content: flex-start">
+        <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Chào cậu</div>
+      </div>
+      <div class="row" style="justify-content: flex-start">
+        <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Mua sicula</div>
+      </div>
+      <div class="row" style="justify-content: flex-end">
+        <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Dạ shop nghe ạ</div>
+      </div>
+      <div class="row" style="justify-content: flex-start">
+        <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Tôi cần tư vấn</div>
+      </div>
+    </div>
+    <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+  </div>
+</div>
+
+<!-- E: TikTok states the side itself. Semantics must win over everything. -->
+<div class="surface" id="case-e" hidden>
+  <div data-e2e="chat-message-list" class="thread">
+    <div class="row" style="justify-content: flex-end">
+      <div data-e2e="chat-item-other" class="bubble">shop còn hàng không</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item-self" class="bubble">Dạ còn ạ</div>
+    </div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- H: what production actually does - the conversation is re-rendered into a
+     new list and the old one is left in the page holding only a banner. The
+     stale container comes first in the DOM, so reading "the first match" finds
+     nothing but the banner. -->
+<div class="surface" id="case-h" hidden>
+  <div data-e2e="chat-message-list" class="css-stale-DivChatBox thread">
+    <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper" style="width: 100%; text-align: center">Message request accepted. You can start chatting.</div>
+  </div>
+  <div data-e2e="chat-message-list" class="css-live-DivChatBox thread">
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Hello</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Tối cần tư vấn</div>
+    </div>
+    <div class="row" style="justify-content: flex-end">
+      <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Dạ shop nghe ạ</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="tiktok-hash--DivChatItemWrapper bubble">Mua sicula</div>
+    </div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- I: TikTok can render an image-only outbound bubble without chat-item or
+     chat-text markers. Its blob URL is inside the sent thread, not an unsent
+     attachment preview in the composer. -->
+<div class="surface" id="case-i" hidden>
+  <div data-e2e="dm-new-chatbox">
+    <div data-e2e="chat-message-list" class="thread">
+      <div class="row" style="justify-content: flex-start">
+        <div data-e2e="chat-item" class="bubble">Cho mình xem ảnh nhé</div>
+      </div>
+      <div class="row" style="justify-content: flex-end">
+        <div class="bubble">
+          <img src="blob:sent-product-image" alt="sent product" style="display:block;width:120px;height:80px">
+        </div>
+      </div>
+      <div class="row" style="justify-content: flex-end">
+        <div data-e2e="chat-item" class="bubble">Đây là ảnh sản phẩm ạ</div>
+      </div>
+    </div>
+    <div data-e2e="message-input-area" class="composer">
+      <div data-e2e="dm-new-input-editor"><div contenteditable="true" role="textbox"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- K: production shape observed live - a stale `chat-message-list` left
+     behind by a re-render holds only a single old media-only outbound bubble
+     (an image sent earlier, no caption); a second, live `chat-message-list`
+     next to it holds the real, current conversation (several real text
+     messages back and forth, including the customer's newest unanswered
+     one). The stale container matches the same selector as the live one, so
+     `messages()` must pick the container with the real conversation, not
+     silently lock onto the one-image leftover and report the thread as
+     "no readable inbound message" scan after scan. -->
+<div class="surface" id="case-k" hidden>
+  <div data-e2e="chat-message-list" class="tiktok-hash-stale thread">
+    <div class="row" style="justify-content: flex-end">
+      <div class="bubble">
+        <img src="blob:old-sent-image" alt="old sent product" style="display:block;width:120px;height:80px">
+      </div>
+    </div>
+  </div>
+  <div data-e2e="chat-message-list" class="tiktok-hash-live thread">
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="bubble">Chào shop</div>
+    </div>
+    <div class="row" style="justify-content: flex-end">
+      <div data-e2e="chat-item" class="bubble">Dạ shop nghe ạ</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="bubble">Áo còn size M không ạ</div>
+    </div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- L: the inverted shape of K - the stale container is the BIGGER one (it
+     held a longer conversation before TikTok tore it down and started a
+     fresh one), and the live container has only just begun rendering, with
+     a single new bubble so far. "Most nodes wins" picks the stale container
+     here, which is wrong: it reports an old, already-superseded message
+     instead of the one genuinely unread message in the live thread. -->
+<div class="surface" id="case-l" hidden>
+  <div data-e2e="chat-message-list" class="tiktok-hash-stale thread">
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="bubble">Chào shop</div>
+    </div>
+    <div class="row" style="justify-content: flex-end">
+      <div data-e2e="chat-item" class="bubble">Dạ shop nghe ạ</div>
+    </div>
+    <div class="row" style="justify-content: flex-end">
+      <div class="bubble">
+        <img src="blob:old-sent-image" alt="old sent product" style="display:block;width:120px;height:80px">
+      </div>
+    </div>
+  </div>
+  <div data-e2e="chat-message-list" class="tiktok-hash-live thread">
+    <div class="row" style="justify-content: flex-start">
+      <div data-e2e="chat-item" class="bubble">Còn hàng không shop</div>
+    </div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>
+
+<!-- J: a long unanswered burst of short customer messages, each row carrying
+     its own avatar circle beside the bubble - the shape that made
+     `isSystemNotice` misread every real bubble as a banner once its
+     text-align/width heuristics stopped being gated on an unresolved
+     direction (candidates=N notices=N in production, 0 real messages read
+     from a thread that had 8). -->
+<div class="surface" id="case-j" hidden>
+  <div data-e2e="chat-message-list" class="tiktok-hash-DivChatBox thread">
+    <div class="row" style="justify-content: flex-end">
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">cứ nhắn tin cho em nhé. Chúc bạn một ngày tốt lành ạ!</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div class="avatar" style="width:32px;height:32px;border-radius:50%;background:#555;flex-shrink:0;margin-right:8px"></div>
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">Bạn ơi mình muốn mua sữa milo</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div class="avatar" style="width:32px;height:32px;border-radius:50%;background:#555;flex-shrink:0;margin-right:8px"></div>
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">Hello</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div class="avatar" style="width:32px;height:32px;border-radius:50%;background:#555;flex-shrink:0;margin-right:8px"></div>
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">Tôi muốn mua sữa</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div class="avatar" style="width:32px;height:32px;border-radius:50%;background:#555;flex-shrink:0;margin-right:8px"></div>
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">Hello</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div class="avatar" style="width:32px;height:32px;border-radius:50%;background:#555;flex-shrink:0;margin-right:8px"></div>
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">Mua sữa</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div class="avatar" style="width:32px;height:32px;border-radius:50%;background:#555;flex-shrink:0;margin-right:8px"></div>
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">Alo alo</div>
+    </div>
+    <div class="row" style="justify-content: flex-start">
+      <div class="avatar" style="width:32px;height:32px;border-radius:50%;background:#555;flex-shrink:0;margin-right:8px"></div>
+      <div data-e2e="chat-item" class="tiktok-hash-DivChatItemWrapper bubble">Tôi muốn mua sữa</div>
+    </div>
+  </div>
+  <div data-e2e="message-input-area" class="composer"><div contenteditable="true" role="textbox"></div></div>
+</div>

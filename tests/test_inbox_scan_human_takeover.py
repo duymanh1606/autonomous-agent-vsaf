@@ -1,0 +1,308 @@
+"""InboxScanSkill's conversation-control gates: pre-generation and the
+post-generation race guard, plus the "keep scanning while HUMAN" invariant.
+
+Uses the same StubContext/StubReplyProvider/observation_for helpers as
+`test_inbox_scan_flow.py`'s `ActiveConversationScanTests`, against a real
+`ConversationControlRepository` backed by Postgres
+(`tests/support.make_database`) so the gates are exercised end to end rather
+than against a mock.
+"""
+
+import os
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from agent.reply_service import ReplyDecision
+from models.result import ActionResult
+from platforms.tiktok.inbox_watcher import InboxScanSkill
+from platforms.tiktok.screens import TikTokScreen
+from storage.conversation_control import ConversationControlRepository
+from tests.support import make_database
+from tests.test_inbox_scan_flow import (
+    StubContext, StubReplyProvider, StubReplySkill, observation_for, scan_task,
+)
+
+
+def register_conversation(database, conversation_id):
+    database.conn.execute(
+        "INSERT INTO conversations(account_id, platform_conversation_id) "
+        "VALUES (%s, %s)",
+        (database.account_id, conversation_id),
+    )
+    database.conn.commit()
+
+
+INBOUND = {"id": "m1", "text": "Còn hàng không?", "direction": "INBOUND"}
+
+
+def open_thread_context(messages, active="customer"):
+    return StubContext(
+        observation_for(TikTokScreen.CONVERSATION, messages=messages, active=active),
+        {
+            "platform.list_unread_conversations": ActionResult(
+                success=True, data={"tool": {"conversations": []}}
+            ),
+        },
+    )
+
+
+class InboxScanHumanTakeoverTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.database = make_database(self)
+        self.conversation_control = ConversationControlRepository(self.database)
+        register_conversation(self.database, "customer")
+
+    def _skill(self, provider, reply_result=None, conversation_control=None):
+        reply_skill = StubReplySkill(reply_result or ActionResult(
+            success=True, data={"decision": "complete_task", "send_status": "SENT"}
+        ))
+        return InboxScanSkill(
+            reply_provider=provider, reply_skill=reply_skill,
+            conversation_control=(
+                self.conversation_control
+                if conversation_control is None else conversation_control
+            ),
+        ), reply_skill
+
+    async def test_case1_takeover_without_escalation_skips_reply_generation(self):
+        """AUTO -> manual takeover (no escalation row) -> next scan is
+        reported as human_controlled and the LLM is never called."""
+        await self.conversation_control.takeover("customer", "operator-1")
+
+        provider = StubReplyProvider(ReplyDecision(
+            text="should never be sent", should_send=True, model="stub"
+        ))
+        skill, reply_skill = self._skill(provider)
+        result = await skill.execute(scan_task(), open_thread_context([INBOUND]))
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            result.data["active_conversation"]["status"], "human_controlled"
+        )
+        self.assertEqual(provider.contexts, [])
+        self.assertEqual(reply_skill.tasks, [])
+
+    async def test_case2_reply_generated_then_taken_over_is_discarded(self):
+        """The takeover lands *during* reply generation - the decision must
+        be discarded and no reply task created."""
+
+        class TakeoverMidGeneration(StubReplyProvider):
+            def __init__(self, decision, conversation_control):
+                super().__init__(decision)
+                self.conversation_control = conversation_control
+
+            async def reply(self, context):
+                await self.conversation_control.takeover("customer", "operator-1")
+                return await super().reply(context)
+
+        provider = TakeoverMidGeneration(
+            ReplyDecision(text="too late", should_send=True, model="stub"),
+            self.conversation_control,
+        )
+        skill, reply_skill = self._skill(provider)
+
+        with self.assertLogs("platforms.tiktok.inbox_watcher", level="INFO") as logs:
+            result = await skill.execute(scan_task(), open_thread_context([INBOUND]))
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            result.data["active_conversation"]["status"], "human_controlled"
+        )
+        self.assertEqual(reply_skill.tasks, [])
+        self.assertTrue(any(
+            "generated reply discarded because conversation is human controlled" in line
+            for line in logs.output
+        ))
+
+    @unittest.skipUnless(
+        os.environ.get("GEMINI_API_KEY"),
+        "GEMINI_API_KEY not set; skipping the real gemini-3.1-flash-lite race test",
+    )
+    async def test_case2_with_real_gemini_flash_lite_reply(self):
+        """Same race, but the reply is genuinely generated by
+        gemini-3.1-flash-lite instead of a stub - proves the discard guard
+        works against a real model call, not just an instant stub."""
+        from agent.message_analyzer import MessageAnalyzer
+        from agent.message_router import MessageRouter
+        from agent.reply_generator import ReplyGenerator
+        from agent.reply_service import PipelineReplyProvider
+        from agent.reply_validator import ReplyValidator
+        from agent.state_manager import CustomerStateManager
+        from llm.gemini_flash_lite import GeminiFlashLiteProvider
+        from tools.registry import BusinessToolRegistry
+
+        llm = GeminiFlashLiteProvider(
+            api_key=os.environ["GEMINI_API_KEY"], model="gemini-3.1-flash-lite",
+        )
+        state_manager = CustomerStateManager(["browsing", "ordering", "human_required"])
+        business_tools = BusinessToolRegistry([])
+        real_provider = PipelineReplyProvider(
+            analyzer=MessageAnalyzer(llm, ["question"], ["browsing"], business_tools.names),
+            router=MessageRouter(0.65, []),
+            state_manager=state_manager,
+            reply_generator=ReplyGenerator(llm, 1000, None),
+            reply_validator=ReplyValidator(1000),
+            business_tools=business_tools,
+        )
+
+        class TakeoverMidGeneration:
+            def __init__(self, provider, conversation_control):
+                self.provider = provider
+                self.conversation_control = conversation_control
+
+            async def reply(self, context):
+                decision = await self.provider.reply(context)
+                await self.conversation_control.takeover("customer", "operator-1")
+                return decision
+
+        provider = TakeoverMidGeneration(real_provider, self.conversation_control)
+        skill, reply_skill = self._skill(provider)
+
+        result = await skill.execute(
+            scan_task(),
+            open_thread_context(
+                [{"id": "m1", "text": "Giá bao nhiêu vậy shop?", "direction": "INBOUND"}]
+            ),
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            result.data["active_conversation"]["status"], "human_controlled"
+        )
+        self.assertEqual(reply_skill.tasks, [])
+
+    async def test_case4_human_conversation_persists_inbound_without_replying(self):
+        await self.conversation_control.takeover("customer", "operator-1")
+        provider = StubReplyProvider(ReplyDecision(
+            text="should never be sent", should_send=True, model="stub"
+        ))
+        skill, _ = self._skill(provider)
+        result = await skill.execute(scan_task(), open_thread_context([INBOUND]))
+
+        self.assertEqual(
+            result.data["active_conversation"]["status"], "human_controlled"
+        )
+        self.assertEqual(
+            result.data["active_conversation"]["inbound_message_id"], "m1"
+        )
+        self.assertEqual(provider.contexts, [])
+
+    async def test_case7_one_human_conversation_does_not_affect_another(self):
+        """Two independent scans sharing one conversation_control: the HUMAN
+        conversation is skipped, the AUTO one is still answered normally.
+        Separate InboxScanSkill instances isolate the two threads' own
+        per-conversation ledgers, matching how each conversation's scan is
+        independent in the spec."""
+        register_conversation(self.database, "other-customer")
+        await self.conversation_control.takeover("customer", "operator-1")
+
+        human_provider = StubReplyProvider(ReplyDecision(
+            text="should never be sent", should_send=True, model="stub"
+        ))
+        human_skill, _ = self._skill(human_provider)
+        human_result = await human_skill.execute(
+            scan_task(), open_thread_context([INBOUND], active="customer"),
+        )
+        self.assertEqual(
+            human_result.data["active_conversation"]["status"], "human_controlled"
+        )
+        self.assertEqual(human_provider.contexts, [])
+
+        auto_provider = StubReplyProvider(ReplyDecision(
+            text="Dạ shop đây ạ", should_send=True, model="stub"
+        ))
+        auto_skill, _ = self._skill(auto_provider)
+        auto_result = await auto_skill.execute(
+            scan_task(),
+            open_thread_context(
+                [{"id": "m2", "text": "Hi", "direction": "INBOUND"}],
+                active="other-customer",
+            ),
+        )
+        self.assertEqual(auto_result.data["active_conversation"]["status"], "sent")
+        self.assertEqual(len(auto_provider.contexts), 1)
+
+    async def test_human_controlled_still_syncs_the_rendered_thread(self):
+        """The DB write for a human-controlled conversation happens through
+        `reply_provider.persist_thread`, since `_persist_thread` is normally
+        reached only inside `reply()` - which is never called while HUMAN.
+        Without this, nothing observed while a human owns the conversation
+        would ever reach `conversation_messages`."""
+        await self.conversation_control.takeover("customer", "operator-1")
+
+        class RecordingReplyProvider(StubReplyProvider):
+            def __init__(self, decision):
+                super().__init__(decision)
+                self.persisted = []
+
+            async def persist_thread(self, context):
+                self.persisted.append(context.conversation_key)
+
+        provider = RecordingReplyProvider(ReplyDecision(
+            text="should never be sent", should_send=True, model="stub"
+        ))
+        skill, _ = self._skill(provider)
+        result = await skill.execute(scan_task(), open_thread_context([INBOUND]))
+
+        self.assertEqual(
+            result.data["active_conversation"]["status"], "human_controlled"
+        )
+        # How many times the sync ran is incidental, and asserting an exact
+        # count silently broke when a second, deliberate persist was added
+        # ahead of the burst wait so a new message reaches the dashboard
+        # without waiting out the quiet period. Both calls are idempotent
+        # where it counts - store_visible_messages inserts ON CONFLICT DO
+        # NOTHING - so what this test is really about is that the thread is
+        # synced at all while a human owns the conversation, and that the
+        # sync never wanders onto another conversation.
+        self.assertTrue(provider.persisted)
+        self.assertEqual(set(provider.persisted), {"customer"})
+        self.assertEqual(provider.contexts, [])
+
+    async def test_human_controlled_does_not_accumulate_revisits_or_escalate(self):
+        """`human_controlled` must count as settled: repeated scans of a
+        conversation a human already owns must never grow the unanswered
+        ledger and must never trigger an automatic escalation."""
+        await self.conversation_control.takeover("customer", "operator-1")
+
+        class RecordingHandoff:
+            def __init__(self):
+                self.calls = []
+
+            async def open(self, **kwargs):
+                self.calls.append(kwargs)
+
+        handoff = RecordingHandoff()
+        provider = StubReplyProvider(ReplyDecision(
+            text="should never be sent", should_send=True, model="stub"
+        ))
+        reply_skill = StubReplySkill(ActionResult(success=True, data={}))
+        skill = InboxScanSkill(
+            reply_provider=provider, reply_skill=reply_skill,
+            conversation_control=self.conversation_control, handoff=handoff,
+        )
+
+        # The same inbound message is "already_handled" from the second scan
+        # onward - exactly like a normal answered conversation - but it must
+        # never be treated as *unanswered* (which is what would grow the
+        # revisit ledger and eventually escalate).
+        first = await skill.execute(scan_task(), open_thread_context([INBOUND]))
+        self.assertEqual(
+            first.data["active_conversation"]["status"], "human_controlled"
+        )
+        for _ in range(4):
+            result = await skill.execute(scan_task(), open_thread_context([INBOUND]))
+            self.assertIn(
+                result.data["active_conversation"]["status"],
+                {"human_controlled", "already_handled"},
+            )
+
+        self.assertEqual(skill._unanswered, {})
+        self.assertEqual(handoff.calls, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

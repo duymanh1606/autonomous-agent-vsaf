@@ -1,0 +1,137 @@
+name: CI
+
+# The test suite is the thing that makes changing this system safe - 529 cases
+# covering the send path, account isolation, human takeover and the inbox
+# ledger. Until now nothing ran it except a person remembering to.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # A new push supersedes the run still going for the previous one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    # Rules and their reasons live in pyproject.toml ([tool.ruff]). Pinned so
+    # a new ruff release cannot turn main red without a code change; bump it
+    # on purpose. uvx keeps it out of uv.lock - it is a tool, not a dependency.
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: ruff check
+        run: uvx ruff@0.16.9 check --output-format github .
+
+  python:
+    name: Tests (pytest)
+    runs-on: ubuntu-latest
+
+    services:
+      # tests/support.py skips every database-backed test when no server
+      # answers, which would leave ~130 of them silently green. Providing
+      # PostgreSQL here is what makes the run mean something. Same major
+      # version as compose.yaml so schema behaviour matches production.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agent
+          POSTGRES_PASSWORD: agent
+          POSTGRES_DB: agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent -d agent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      AGENT_TEST_DATABASE_URL: postgresql://agent:agent@127.0.0.1:5432/agent
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # --frozen: fail if uv.lock disagrees with pyproject.toml rather than
+        # quietly resolving something different from what runs in production.
+        run: uv sync --frozen
+
+      - name: Type check (mypy)
+        # Gradual: [tool.mypy] in pyproject.toml lists the modules that must
+        # pass. Pinned like ruff; reads the project's installed dependencies.
+        run: uvx mypy@1.13.0 --python-executable .venv/bin/python
+
+      - name: Chrome for the DOM smoke test
+        # tests/test_chrome_smoke.py drives the real extension code in a real
+        # Chrome against a fake TikTok page - the seam every field bug so far
+        # has come from, and the one a stubbed DOM cannot cover. The runner
+        # image ships Chrome; say so out loud so a runner that stops shipping
+        # it is visible here rather than as a silent skip below.
+        run: google-chrome --version && openssl version
+
+      - name: Run tests
+        run: uv run python -m pytest tests/ -q
+
+      - name: Fail if the Chrome smoke test was skipped
+        # Same reason as the database guard below: a suite that quietly
+        # skipped the only test touching a real browser looks exactly like one
+        # that ran it.
+        run: |
+          uv run python -m pytest tests/test_chrome_smoke.py -q \
+            | tee /tmp/chrome-smoke.txt
+          if grep -q "skipped" /tmp/chrome-smoke.txt; then
+            echo "::error::Chrome smoke test skipped - no browser on this runner"
+            exit 1
+          fi
+
+      - name: Fail if database tests were skipped
+        # A green run that skipped every database test looks identical to a
+        # real one. This turns "PostgreSQL never came up" into a failure
+        # instead of false confidence.
+        run: |
+          uv run python -m pytest tests/test_conversation_control.py -q \
+            | tee /tmp/db-tests.txt
+          if grep -q "skipped" /tmp/db-tests.txt; then
+            echo "::error::Database tests skipped - PostgreSQL was not reachable"
+            exit 1
+          fi
+
+  dashboard:
+    name: Dashboard (tsc + vitest + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests (vitest)
+        run: npm test
+
+      - name: Build
+        # `npm run build` runs `tsc -b` then vite build, so this also catches
+        # a project-references break that `tsc --noEmit` alone would not.
+        run: npm run build

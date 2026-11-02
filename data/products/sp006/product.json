@@ -1,0 +1,21 @@
+{
+  "name": "Sữa tắm Venus BigOne",
+  "brand": "Venus",
+  "category": "Chăm sóc cá nhân",
+  "form": "Chai",
+  "package": "Chai 1L",
+  "price": 89000,
+  "volume": "1L",
+  "description": "Sữa tắm Venus BigOne chai lớn 1L, dưỡng ẩm da.",
+  "ingredients": [],
+  "benefits": [],
+  "warnings": [],
+  "keywords": ["venus", "bigone", "venus bigone", "sữa tắm"],
+  "tags": ["sữa tắm", "chăm sóc cá nhân"],
+  "stock": 80,
+  "id": "sp006",
+  "media": {
+    "images": ["images/sp006.png"],
+    "videos": ["videos/sp006.mp4"]
+  }
+}

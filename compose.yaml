@@ -1,0 +1,67 @@
+name: autonomous-agent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent}
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - wal_compression=on
+      - -c
+      - log_min_duration_statement=1000
+    ports:
+      # Loopback only. Without the 127.0.0.1 prefix Docker publishes on every
+      # interface, which would put PostgreSQL - with whatever
+      # POSTGRES_PASSWORD is, the stock "agent" included - one connection
+      # away from anyone who can reach this host.
+      # Nothing off this machine ever needs it: the supervisor, the agents,
+      # the tests and backup.sh (via `compose exec`) are all local.
+      - "127.0.0.1:${POSTGRES_PORT:-25432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    stop_grace_period: 30s
+
+  dashboard:
+    build: ./dashboard
+    restart: unless-stopped
+    # dashboard_api (the supervisor) is deliberately NOT containerized: it
+    # spawns Chrome and the agent process on the host so they get a real,
+    # visible window for login/CAPTCHA/OTP. This container only serves the
+    # built SPA and proxies /api to that host process on 127.0.0.1:28080 -
+    # which is only reachable from the host's own network namespace, hence
+    # host networking here instead of a published port (Linux only; there is
+    # no host network mode on Docker Desktop for Mac/Windows).
+    network_mode: host
+    environment:
+      SUPERVISOR_HOST: ${SUPERVISOR_HOST:-127.0.0.1}
+      SUPERVISOR_PORT: ${SUPERVISOR_PORT:-28080}
+      DASHBOARD_LISTEN_PORT: ${DASHBOARD_PORT:-25173}
+      # Host networking means there is no port mapping to restrict, so the
+      # `listen` address in nginx.conf.template is the only thing keeping the
+      # dashboard off every interface on this machine. Loopback by default:
+      # cloudflared reaches it from this host, and nothing else should.
+      # Set it to 0.0.0.0 only for a LAN-only deployment with no tunnel.
+      DASHBOARD_LISTEN_ADDR: ${DASHBOARD_LISTEN_ADDR:-127.0.0.1}
+      # The second listener, for `ssh -L 25174:127.0.0.1:25174`. It is the
+      # operator's way in when Cloudflare is down or misconfigured, and it is
+      # the reason requiring an Access assertion on the tunnel listener cannot
+      # lock anyone out.
+      DASHBOARD_LOCAL_PORT: ${DASHBOARD_LOCAL_PORT:-25174}
+
+volumes:
+  postgres_data:
+    name: autonomous-agent-postgres-data
